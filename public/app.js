@@ -1,7 +1,10 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const cents = (p) => (p == null || Number.isNaN(p) ? "–" : `${Math.round(p * 100)}¢`);
-const ARROW = { yes_up: "▲ YES", yes_down: "▼ YES", none: "– none" };
+const arrow = (c) => {
+  const first = c.market?.outcomes?.[0] ?? "YES";
+  return { up: `▲ ${first}`, down: `▼ ${first}`, none: "– none" }[c.effect] ?? c.effect;
+};
 
 function prepend(listId, html, max = 40) {
   const list = $(listId);
@@ -19,7 +22,7 @@ function verdictHtml(c) {
 
 const callHtml = (c) => `
   <li class="call ${c.effect}" data-call="${esc(c.id)}">
-    <div class="row"><b>${ARROW[c.effect] ?? esc(c.effect)}</b><span>${"●".repeat(c.strength ?? 1)}</span><em>${cents(c.priceAtCall)}</em></div>
+    <div class="row"><b>${esc(arrow(c))}</b><span>${"●".repeat(c.strength ?? 1)}</span><em>${cents(c.priceAtCall)}</em></div>
     <p>${esc(c.market?.question)}</p>
     <small>${esc(c.reason)} · ${c.latencyMs} ms</small>
     <div>${verdictHtml(c)}</div>

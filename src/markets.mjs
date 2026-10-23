@@ -18,13 +18,18 @@ export async function refreshMarkets(pages = 5) {
     for (const m of await r.json()) {
       const tokens = parseList(m.clobTokenIds);
       if (!tokens.length) continue;
+      const prices = parseList(m.outcomePrices).map(Number);
+      // Head-to-head markets have no "Yes": outcomes are names ("Rays", "Brewers"). Calls are always about
+      // the FIRST listed outcome, whose order-book token is tokens[0].
       fresh.set(m.id, {
         id: m.id,
         question: m.question,
         event: m.events?.[0]?.title ?? "",
         endDate: m.endDate,
+        outcomes: parseList(m.outcomes),
+        prices,
         yesToken: tokens[0],
-        yesPrice: Number(parseList(m.outcomePrices)[0] ?? NaN),
+        yesPrice: prices[0] ?? NaN,
         volume24hr: Number(m.volume24hr ?? 0),
       });
     }

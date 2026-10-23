@@ -15,13 +15,13 @@ const stats = { posts: 0, matched: 0, judged: 0, decided: 0, correct: 0, pnl: 0 
 console.log(`Loaded ${await refreshMarkets()} live markets`);
 setInterval(() => refreshMarkets().catch(() => {}), 5 * 60_000);
 
-const brief = (m) => ({ id: m.id, question: m.question, yesToken: m.yesToken });
+const brief = (m) => ({ id: m.id, question: m.question, outcomes: m.outcomes, yesToken: m.yesToken });
 
 // Paper trade: $100 on the side the analyst called, for calls of strength 2+. Before fees and spread.
 function paperPnl(g) {
   if (g.effect === "none" || g.strength < 2 || g.priceAtCall == null) return 0;
-  const entry = g.effect === "yes_up" ? g.priceAtCall : 1 - g.priceAtCall;
-  const exit = g.effect === "yes_up" ? g.priceAfter : 1 - g.priceAfter;
+  const entry = g.effect === "up" ? g.priceAtCall : 1 - g.priceAtCall;
+  const exit = g.effect === "up" ? g.priceAfter : 1 - g.priceAfter;
   return entry > 0 ? STAKE * (exit / entry - 1) : 0;
 }
 

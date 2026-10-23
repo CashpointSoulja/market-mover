@@ -76,10 +76,10 @@ small {
   gap: 10px;
   align-items: center;
 }
-.call.yes_up b {
+.call.up b {
   color: var(--green);
 }
-.call.yes_down b {
+.call.down b {
   color: var(--red);
 }
 .call.none b,
