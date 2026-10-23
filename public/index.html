@@ -12,8 +12,14 @@
     <header>
       <h1>MARKET MOVER</h1>
       <p>News in. Calls out. The market grades every one.</p>
+      <nav>
+        <button data-view="floor" class="on">Trading floor</button>
+        <button data-view="nightshift">Night Shift</button>
+        <button data-view="kombat">Model Kombat</button>
+      </nav>
     </header>
-    <main>
+
+    <main id="floor" class="view">
       <section>
         <h2>Live news matched to markets</h2>
         <ul id="news"></ul>
@@ -27,6 +33,35 @@
         <dl id="stats"></dl>
       </aside>
     </main>
+
+    <div id="nightshift" class="view page" hidden>
+      <h2 class="pixel">★ NIGHT SHIFT ★</h2>
+      <p class="lede">Every call is graded by what the market did 10 minutes later. Wrong calls are the corrections Mubit learns from.</p>
+      <div id="ns-cards" class="cards"></div>
+      <h3>Learning curve (15-minute windows)</h3>
+      <div id="ns-curve" class="curve"></div>
+      <h3>By version</h3>
+      <table id="ns-versions"></table>
+      <div class="mubit-box">
+        <b>Mubit</b> groups these calls into one task and trains a small model for it once it has 25 kept examples.
+        Each version is tested against the big model, then compared in Mubit's Try models.
+        <a href="https://app.mubit.ai/" target="_blank" rel="noopener">Open the Mubit console ↗</a>
+      </div>
+    </div>
+
+    <div id="kombat" class="view page" hidden>
+      <h2 class="pixel">MODEL KOMBAT</h2>
+      <p class="lede">The same graded cases for every fighter. The market is the referee. Speed and cost count too.</p>
+      <button id="fight" class="pixel-btn">FIGHT! (20 rounds)</button>
+      <span id="kombat-status" class="muted"></span>
+      <div id="arena" class="arena"></div>
+      <div class="fighter ghost">
+        <div class="pixel name">MUBIT ADAPTER</div>
+        <p>Our own small model. It trains once Mubit has 25 kept examples, then fights in Mubit's Try models.</p>
+      </div>
+      <ol id="rounds" class="rounds"></ol>
+    </div>
+
     <footer id="ticker">ON-CHAIN · connecting…</footer>
     <script src="/app.js"></script>
   </body>

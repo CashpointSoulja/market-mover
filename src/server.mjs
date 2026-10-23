@@ -4,8 +4,9 @@ import { refreshMarkets, matchMarkets, markets } from "./markets.mjs";
 import { streamPosts } from "./news.mjs";
 import { judge, analystStatus, PROMPT_VERSION } from "./analyst.mjs";
 import { midpoint } from "./prices.mjs";
-import { scheduleGrade } from "./grader.mjs";
+import { startGrader, readJsonl, callTime } from "./grader.mjs";
 import { streamChain } from "./chain.mjs";
+import { runKombat } from "./kombat.mjs";
 import { emit, record, recentOf, subscribe } from "./store.mjs";
 
 const PORT = Number(process.env.PORT || 4321);
@@ -25,13 +26,21 @@ function paperPnl(g) {
   return entry > 0 ? STAKE * (exit / entry - 1) : 0;
 }
 
-function onGraded(g) {
-  g.pnl = Number(paperPnl(g).toFixed(2));
+function count(g) {
   if (g.correct != null) {
     stats.decided++;
     if (g.correct) stats.correct++;
   }
-  stats.pnl += g.pnl;
+  stats.pnl += g.pnl ?? 0;
+}
+
+// Restart-safe: rebuild the scoreboard from what is already on disk.
+for (const g of await readJsonl("grades.jsonl")) count(g);
+stats.judged = (await readJsonl("calls.jsonl")).length;
+
+function onGraded(g) {
+  g.pnl = Number(paperPnl(g).toFixed(2));
+  count(g);
   emit("grade", g);
   record("grades.jsonl", g);
 }
@@ -59,11 +68,15 @@ async function pump() {
         priceAtCall: await midpoint(graded.yesToken).catch(() => null),
         latencyMs: verdict.latencyMs,
         servedBy: verdict.servedBy,
+        mubitRequestId: verdict.mubitRequestId,
+        sessionId: verdict.sessionId,
+        usage: verdict.usage,
+        cost: verdict.cost,
+        input: verdict.input, // exact text the model saw, so Model Kombat can replay it fairly
         promptVersion: PROMPT_VERSION,
       };
       emit("call", call);
-      record("calls.jsonl", call);
-      scheduleGrade(call, onGraded);
+      await record("calls.jsonl", call);
     }
   } catch (e) {
     emit("problem", { message: e.message });
@@ -83,11 +96,59 @@ streamPosts((post) => {
   pump();
 }, stats);
 
+startGrader(onGraded);
 streamChain((tick) => emit("chain", tick)).catch((e) => console.error("chain:", e.message));
-
 setInterval(() => emit("stats", { ...stats, analyst: analystStatus(), markets: markets.size, queue: queue.length }), 2000);
 
+// Night Shift: how the analyst is doing per model version and over time, graded by the market.
+async function nightShift() {
+  const decided = (await readJsonl("grades.jsonl")).filter((g) => g.correct != null);
+  const summarise = (rows) => {
+    const moves = rows.filter((g) => g.actual !== "none");
+    const calledMoves = rows.filter((g) => g.effect !== "none");
+    return {
+      decided: rows.length,
+      accuracy: rows.length ? rows.filter((g) => g.correct).length / rows.length : null,
+      alwaysNone: rows.length ? rows.filter((g) => g.actual === "none").length / rows.length : null, // the lazy baseline
+      movesCaught: moves.length ? moves.filter((g) => g.correct).length / moves.length : null,
+      moves: moves.length,
+      callPrecision: calledMoves.length ? calledMoves.filter((g) => g.correct).length / calledMoves.length : null,
+      calls: calledMoves.length,
+      avgLatencyMs: rows.length ? Math.round(rows.reduce((s, g) => s + (g.latencyMs ?? 0), 0) / rows.length) : null,
+      costPerCall: rows.length ? rows.reduce((s, g) => s + (g.cost ?? 0), 0) / rows.length : null,
+    };
+  };
+  // A "version" is whatever served the call: the provider model today, a Mubit adapter if Mubit starts serving one.
+  const versions = Object.entries(Object.groupBy(decided, (g) => `${g.servedBy} · prompt ${g.promptVersion}`)).map(([name, rows]) => ({ name, ...summarise(rows) }));
+  const buckets = Object.groupBy(decided, (g) => Math.floor(callTime(g) / 900) * 900);
+  const curve = Object.entries(buckets)
+    .sort(([a], [b]) => a - b)
+    .map(([from, rows]) => ({ from: Number(from), ...summarise(rows) }));
+  const base = curve.find((b) => b.decided >= 10)?.accuracy ?? null;
+  const now = summarise(decided);
+  return {
+    now,
+    versions,
+    curve,
+    normalizedGain: base != null && base < 1 && now.accuracy != null ? (now.accuracy - base) / (1 - base) : null,
+    corrections: decided.filter((g) => !g.correct).length,
+  };
+}
+
+let kombatRunning = false;
+async function startKombat(limit) {
+  if (kombatRunning) return false;
+  kombatRunning = true;
+  emit("kombat", { status: "started" });
+  runKombat({ limit, onRound: (r) => emit("kombat", { status: "round", ...r }) })
+    .then((board) => emit("kombat", { status: "done", board }))
+    .catch((e) => emit("kombat", { status: "error", message: e.message }))
+    .finally(() => (kombatRunning = false));
+  return true;
+}
+
 const FILES = { "/": ["index.html", "text/html"], "/app.js": ["app.js", "text/javascript"], "/style.css": ["style.css", "text/css"] };
+const json = (res, body, status = 200) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
 
 http
   .createServer(async (req, res) => {
@@ -98,6 +159,11 @@ http
         for (const e of recentOf(type, type === "chain" || type === "stats" ? 1 : 25)) res.write(`event: ${type}\ndata: ${JSON.stringify(e)}\n\n`);
       subscribe(res);
       return;
+    }
+    if (url.pathname === "/api/nightshift") return json(res, await nightShift());
+    if (url.pathname === "/api/kombat" && req.method === "POST") {
+      const started = await startKombat(Math.min(Number(url.searchParams.get("rounds")) || 20, 50));
+      return json(res, { started }, started ? 202 : 409);
     }
     const file = FILES[url.pathname];
     if (!file) return res.writeHead(404).end("not found");

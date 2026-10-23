@@ -58,3 +58,77 @@ es.addEventListener("chain", (e) => {
   const t = JSON.parse(e.data);
   $("ticker").textContent = `ON-CHAIN · ${t.fillsPerSec.toFixed(1)} trade fills/sec · ${t.wallets} wallets in the last minute · ${t.lagSec.toFixed(1)}s behind real time`;
 });
+
+// ---- Tabs ----
+const pct = (x) => (x == null ? "–" : `${Math.round(x * 100)}%`);
+function show(view) {
+  for (const v of document.querySelectorAll(".view")) v.hidden = v.id !== view;
+  for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b.dataset.view === view);
+  if (view === "nightshift") loadNightShift();
+}
+for (const b of document.querySelectorAll("nav button")) b.addEventListener("click", () => show(b.dataset.view));
+
+// ---- Night Shift ----
+async function loadNightShift() {
+  const ns = await (await fetch("/api/nightshift")).json();
+  const n = ns.now;
+  const cards = [
+    ["Graded by the market", n.decided],
+    ["Accuracy", pct(n.accuracy)],
+    ["'Always none' baseline", pct(n.alwaysNone)],
+    ["Moves caught", `${pct(n.movesCaught)} of ${n.moves}`],
+    ["Up/down calls right", `${pct(n.callPrecision)} of ${n.calls}`],
+    ["Normalized gain", ns.normalizedGain == null ? "–" : ns.normalizedGain.toFixed(2)],
+    ["Corrections for Mubit", ns.corrections],
+    ["Cost per call", n.costPerCall == null ? "–" : `$${n.costPerCall.toFixed(4)}`],
+  ];
+  $("ns-cards").innerHTML = cards.map(([k, v]) => `<div class="card"><small>${k}</small><b>${esc(v)}</b></div>`).join("");
+  $("ns-curve").innerHTML = ns.curve.length
+    ? ns.curve
+        .map((b) => {
+          const t = new Date(b.from * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          return `<div class="bar-row"><span>${t}</span><div class="bar"><i style="width:${(b.accuracy ?? 0) * 100}%"></i></div><span>${pct(b.accuracy)} · ${b.decided} graded</span></div>`;
+        })
+        .join("")
+    : `<p class="muted">The first grades arrive 10 minutes after the first calls.</p>`;
+  $("ns-versions").innerHTML =
+    `<tr><th>Version</th><th>Graded</th><th>Accuracy</th><th>Moves caught</th><th>Avg speed</th><th>Cost/call</th></tr>` +
+    ns.versions
+      .map((v) => `<tr><td>${esc(v.name)}</td><td>${v.decided}</td><td>${pct(v.accuracy)}</td><td>${pct(v.movesCaught)}</td><td>${v.avgLatencyMs ?? "–"} ms</td><td>${v.costPerCall == null ? "–" : "$" + v.costPerCall.toFixed(4)}</td></tr>`)
+      .join("");
+}
+setInterval(() => !$("nightshift").hidden && loadNightShift(), 10_000);
+
+// ---- Model Kombat ----
+const FIGHTER_NAMES = { "claude-opus-5-5": "OPUS · the boss", "claude-haiku-4-5": "HAIKU · the cheap one" };
+const fighterName = (n) => FIGHTER_NAMES[n] ?? (n.endsWith("· live") ? `${n.split(" ")[0].replace("claude-", "").toUpperCase()} · our live analyst` : n);
+function renderArena(board) {
+  $("arena").innerHTML = board
+    .map((b) => {
+      const hp = b.rounds ? b.hits / b.rounds : 0;
+      return `<div class="fighter"><div class="pixel name">${esc(fighterName(b.name))}</div>
+        <div class="hp"><i style="width:${hp * 100}%"></i></div>
+        <small>${b.hits}/${b.rounds} right · ${Math.round(b.latencyMs / Math.max(1, b.rounds))} ms avg · $${b.cost.toFixed(4)} spent</small></div>`;
+    })
+    .join("");
+}
+$("fight").addEventListener("click", async () => {
+  $("rounds").innerHTML = "";
+  const r = await fetch("/api/kombat?rounds=20", { method: "POST" });
+  $("kombat-status").textContent = r.status === 409 ? "A fight is already running…" : "Fighting…";
+});
+es.addEventListener("kombat", (e) => {
+  const k = JSON.parse(e.data);
+  if (k.status === "round") {
+    renderArena(k.board);
+    const marks = k.results.map((r) => `${fighterName(r.name)} ${r.error ? "⚠" : r.hit ? "✓" : "✗"}`).join(" · ");
+    prepend("rounds", `<li><b>ROUND ${k.round}/${k.of}</b> ${esc(k.question)} · market said <b>${esc(k.truth)}</b><br><small>${esc(marks)}</small></li>`, 60);
+    $("kombat-status").textContent = `Round ${k.round} of ${k.of}`;
+  } else if (k.status === "done") {
+    renderArena(k.board);
+    const best = [...k.board].sort((a, b) => b.hits / b.rounds - a.hits / a.rounds || a.cost - b.cost)[0];
+    $("kombat-status").textContent = best ? `K.O.! Winner: ${fighterName(best.name)}` : "No graded cases yet: let the market grade a few calls first.";
+  } else if (k.status === "error") {
+    $("kombat-status").textContent = `Fight stopped: ${k.message}`;
+  }
+});

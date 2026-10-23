@@ -1,5 +1,5 @@
 // The one AI call: does this post move one of these markets? Always sent through Mubit (hackathon rule).
-// SYSTEM, the schema and the request settings are frozen: Mubit only groups calls into one task while
+// SYSTEM, the schema and the live request settings are frozen: Mubit only groups calls into one task while
 // the model, instructions and output format stay identical.
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
@@ -30,49 +30,77 @@ const readVerdict = (msg) => {
   }
 };
 
-const model = () => process.env.ANALYST_MODEL;
-const enabled = () => Boolean(process.env.MUBIT_API_KEY && model());
-export const analystStatus = () => (enabled() ? `on · ${model()} via Mubit` : "waiting for Mubit key");
+// Anthropic list prices in $ per million tokens (input, output), for cost per call.
+export const PRICES = { "claude-opus-5-5": [4, 20], "claude-sonnet-5-5": [2, 10], "claude-haiku-4-5": [1, 5] };
+export const costOf = (model, usage) => {
+  const p = PRICES[model];
+  return p && usage?.input != null ? (usage.input * p[0] + usage.output * p[1]) / 1e6 : null;
+};
+
+// Quick classification, so no extended thinking where the model allows it off.
+function settings(model) {
+  if (model === "claude-sonnet-5-5") return { thinking: { type: "between_tools" }, effort: "low" }; // Sonnet 5.5's thinking-off mode
+  if (model.startsWith("claude-haiku-4")) return {}; // no effort control on Haiku 4.5; thinking is off by default
+  return { effort: "low" }; // Opus 5.5 always thinks; low effort keeps it quick
+}
+
+export const liveModel = () => process.env.ANALYST_MODEL;
+const enabled = () => Boolean(process.env.MUBIT_API_KEY && liveModel());
+export const analystStatus = () => (enabled() ? `on · ${liveModel()} via Mubit` : "waiting for Mubit key");
 
 let client;
 const mubit = () =>
   (client ??= new Anthropic({ apiKey: process.env.MUBIT_API_KEY, baseURL: process.env.MUBIT_ANTHROPIC_URL || "https://api.mubit.ai/anthropic" }));
 
-// dryRun sends x-middleware-store: false, so connection tests never become training examples.
-export async function judge(post, candidates, { dryRun = false } = {}) {
-  if (!enabled()) return null;
+export function buildInput(post, candidates) {
   const lines = candidates.map((m, i) => {
     const outcomes = m.outcomes.map((o, j) => `${o} ${(m.prices[j] ?? NaN).toFixed(2)}`).join(" · ");
     return `[${i + 1}] ${m.question} | ${outcomes} | ends ${m.endDate?.slice(0, 10) ?? "?"}`;
   });
+  return `POST: ${post.text.slice(0, 500)}\nMARKETS:\n${lines.join("\n")}`;
+}
+
+// dryRun sends x-middleware-store: false, so tests and Model Kombat replays never become training examples.
+export async function ask(input, candidates, { model = liveModel(), sessionId, dryRun = false } = {}) {
+  const { thinking, effort } = settings(model);
   const started = Date.now();
   const { data, response } = await mubit()
     .messages.create(
       {
-        model: model(),
+        model,
         max_tokens: 1024,
         system: SYSTEM,
-        // Quick classification: no extended thinking. between_tools is Sonnet 5.5's thinking-off mode.
-        ...(model() === "claude-sonnet-5-5" ? { thinking: { type: "between_tools" } } : {}),
-        output_config: { effort: "low", format: { type: FORMAT.type, schema: FORMAT.schema } },
-        // One session per post, hashed so no Bluesky account ids leave this machine. Mubit holds tests out by session.
-        metadata: { user_id: createHash("sha256").update(post.id).digest("hex").slice(0, 32) },
-        messages: [{ role: "user", content: `POST: ${post.text.slice(0, 500)}\nMARKETS:\n${lines.join("\n")}` }],
+        ...(thinking ? { thinking } : {}),
+        output_config: { ...(effort ? { effort } : {}), format: { type: FORMAT.type, schema: FORMAT.schema } },
+        // Mubit holds test cases out by session; one session per post.
+        ...(sessionId ? { metadata: { user_id: sessionId } } : {}),
+        messages: [{ role: "user", content: input }],
       },
       dryRun ? { headers: { "x-middleware-store": "false" } } : undefined,
     )
     .withResponse();
   const latencyMs = Date.now() - started;
-  const verdict = data.stop_reason === "refusal" ? null : readVerdict(data);
+  const refused = data.stop_reason === "refusal";
+  const verdict = refused ? null : readVerdict(data);
   const market = Number.isInteger(verdict?.market) ? (candidates[verdict.market - 1] ?? null) : null;
+  const usage = { input: data.usage?.input_tokens, output: data.usage?.output_tokens };
   return {
     effect: market && verdict.effect !== "none" ? verdict.effect : "none",
     strength: [1, 2, 3].includes(verdict?.strength) ? verdict.strength : 1,
-    reason: data.stop_reason === "refusal" ? "declined by the model" : String(verdict?.reason ?? "").slice(0, 120),
+    reason: refused ? "declined by the model" : String(verdict?.reason ?? "").slice(0, 120),
     market,
     latencyMs,
     servedBy: data.model,
     mubitRequestId: response.headers.get("x-middleware-request-id"),
-    usage: { input: data.usage?.input_tokens, output: data.usage?.output_tokens },
+    usage,
+    cost: costOf(model, usage),
   };
+}
+
+export async function judge(post, candidates, opts = {}) {
+  if (!enabled()) return null;
+  const input = buildInput(post, candidates);
+  // Hashed so no Bluesky account ids leave this machine.
+  const sessionId = createHash("sha256").update(post.id).digest("hex").slice(0, 32);
+  return { input, sessionId, ...(await ask(input, candidates, { sessionId, ...opts })) };
 }
