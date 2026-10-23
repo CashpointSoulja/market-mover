@@ -1,0 +1,132 @@
+:root {
+  --bg: #07090d;
+  --panel: #0d1117;
+  --line: #1f2a37;
+  --text: #d7e0ea;
+  --muted: #7b8a9a;
+  --green: #3ddc84;
+  --red: #ff5d5d;
+  --amber: #ffc14d;
+  --accent: #7aa2ff;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "JetBrains Mono", ui-monospace, monospace;
+}
+header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+h1 {
+  font: 16px "Press Start 2P", monospace;
+  color: var(--amber);
+  margin: 0;
+}
+header p {
+  margin: 0;
+  color: var(--muted);
+}
+main {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 300px;
+  gap: 1px;
+  background: var(--line);
+  height: calc(100vh - 100px);
+}
+section,
+aside {
+  background: var(--panel);
+  padding: 12px 16px;
+  overflow-y: auto;
+}
+h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin: 0 0 10px;
+}
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+li {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 0;
+}
+li p {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+small {
+  color: var(--muted);
+}
+.call .row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.call.yes_up b {
+  color: var(--green);
+}
+.call.yes_down b {
+  color: var(--red);
+}
+.call.none b,
+.muted {
+  color: var(--muted);
+}
+.call em {
+  margin-left: auto;
+  font-style: normal;
+  color: var(--accent);
+}
+.good {
+  color: var(--green);
+}
+.bad {
+  color: var(--red);
+}
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 700;
+}
+footer {
+  height: 36px;
+  padding: 9px 20px;
+  border-top: 1px solid var(--line);
+  color: var(--green);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 900px) {
+  main {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  section,
+  aside {
+    max-height: 60vh;
+  }
+}

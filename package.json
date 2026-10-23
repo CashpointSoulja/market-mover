@@ -1,0 +1,12 @@
+{
+  "name": "market-mover",
+  "private": true,
+  "type": "module",
+  "description": "Reads live news, calls which Polymarket markets it will move, and lets the market grade every call.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env.local src/server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
