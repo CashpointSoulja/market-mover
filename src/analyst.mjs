@@ -97,10 +97,48 @@ export async function ask(input, candidates, { model = liveModel(), sessionId, d
   };
 }
 
+// The gate: a cheap yes/no screen before the analyst, so Sonnet only sees posts that state a real fact.
+// Its own frozen instructions make it a second Mubit task: high volume, simple answer.
+const GATE_SYSTEM = `You screen social media posts for a prediction-market desk. You get one post and up to 3 live Polymarket markets.
+relevant = true only if the post states a specific, new fact about an event, person or team in one of these markets: a result, score, injury, lineup, announcement, official statement, poll or breaking news.
+Opinions, jokes, ads, fan chatter, links without facts and unrelated posts are false.`;
+const Gate = z.object({ relevant: z.boolean() });
+const GATE_FORMAT = zodOutputFormat(Gate);
+export const gateModel = () => process.env.GATE_MODEL;
+
+export async function gate(input, sessionId, { dryRun = false } = {}) {
+  const model = gateModel();
+  const { thinking, effort } = settings(model);
+  const started = Date.now();
+  const { data } = await mubit()
+    .messages.create(
+      {
+        model,
+        max_tokens: 256,
+        system: GATE_SYSTEM,
+        ...(thinking ? { thinking } : {}),
+        output_config: { ...(effort ? { effort } : {}), format: { type: GATE_FORMAT.type, schema: GATE_FORMAT.schema } },
+        metadata: { user_id: sessionId },
+        messages: [{ role: "user", content: input }],
+      },
+      dryRun ? { headers: { "x-middleware-store": "false" } } : undefined,
+    )
+    .withResponse();
+  let relevant = true; // if the gate can't answer, let the analyst decide rather than drop the post
+  try {
+    relevant = Gate.parse(JSON.parse(data.content.find((b) => b.type === "text")?.text)).relevant;
+  } catch {}
+  const usage = { input: data.usage?.input_tokens, output: data.usage?.output_tokens };
+  return { relevant, latencyMs: Date.now() - started, cost: costOf(model, usage) };
+}
+
+export function prepare(post, candidates) {
+  // Session id is hashed so no Bluesky account ids leave this machine.
+  return { input: buildInput(post, candidates), sessionId: createHash("sha256").update(post.id).digest("hex").slice(0, 32) };
+}
+
 export async function judge(post, candidates, opts = {}) {
   if (!enabled()) return null;
-  const input = buildInput(post, candidates);
-  // Hashed so no Bluesky account ids leave this machine.
-  const sessionId = createHash("sha256").update(post.id).digest("hex").slice(0, 32);
+  const { input, sessionId } = prepare(post, candidates);
   return { input, sessionId, ...(await ask(input, candidates, { sessionId, ...opts })) };
 }

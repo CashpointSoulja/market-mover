@@ -32,8 +32,10 @@ function renderStats(s) {
   const rows = [
     ["Analyst", s.analyst],
     ["Posts read", s.posts.toLocaleString()],
+    ["Dropped (repeats, spam, too short)", s.dropped.toLocaleString()],
     ["Matched to a market", s.matched.toLocaleString()],
-    ["AI calls", s.judged],
+    ["Haiku gate: passed", `${s.gated - s.filtered} of ${s.gated}`],
+    ["Analyst calls", s.judged],
     ["Graded by the market", s.decided],
     ["Accuracy", s.decided ? `${Math.round((100 * s.correct) / s.decided)}%` : "–"],
     ["Paper P&L", `${s.pnl >= 0 ? "+" : "−"}$${Math.abs(s.pnl).toFixed(2)}`],

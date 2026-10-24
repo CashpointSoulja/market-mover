@@ -2,7 +2,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { refreshMarkets, matchMarkets, markets } from "./markets.mjs";
 import { streamPosts } from "./news.mjs";
-import { judge, analystStatus, PROMPT_VERSION } from "./analyst.mjs";
+import { judge, prepare, gate, gateModel, analystStatus, PROMPT_VERSION } from "./analyst.mjs";
 import { midpoint } from "./prices.mjs";
 import { startGrader, readJsonl, callTime } from "./grader.mjs";
 import { streamChain } from "./chain.mjs";
@@ -11,7 +11,21 @@ import { emit, record, recentOf, subscribe } from "./store.mjs";
 
 const PORT = Number(process.env.PORT || 4321);
 const STAKE = 100;
-const stats = { posts: 0, matched: 0, judged: 0, decided: 0, correct: 0, pnl: 0 };
+const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0 };
+
+// Free first pass: skip short posts, posts that are mostly hashtags/links, and repeats seen in the last 30 minutes.
+const seen = new Map();
+function worthChecking(text) {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length < 8) return false;
+  if (words.filter((w) => /^[#@]|^https?:|\.\w{2,}\//.test(w)).length / words.length > 0.4) return false;
+  const key = text.toLowerCase().replace(/https?:\/\/\S+/g, "").replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
+  const now = Date.now();
+  if (now - (seen.get(key) ?? 0) < 30 * 60_000) return false;
+  seen.set(key, now);
+  if (seen.size > 5000) seen.delete(seen.keys().next().value);
+  return true;
+}
 
 console.log(`Loaded ${await refreshMarkets()} live markets`);
 setInterval(() => refreshMarkets().catch(() => {}), 5 * 60_000);
@@ -45,7 +59,19 @@ function onGraded(g) {
   record("grades.jsonl", g);
 }
 
-// One AI call at a time, newest post first; stale posts are dropped rather than falling behind.
+// Cheap AI gate (Haiku via Mubit): only posts that state a real, new fact go on to the analyst.
+async function passesGate(post, candidates) {
+  if (!gateModel()) return true;
+  const { input, sessionId } = prepare(post, candidates);
+  const g = await gate(input, sessionId);
+  stats.gated++;
+  if (g.relevant) return true;
+  stats.filtered++;
+  record("filtered.jsonl", { at: Date.now(), text: post.text.slice(0, 500), markets: candidates.map(brief), latencyMs: g.latencyMs, cost: g.cost });
+  return false;
+}
+
+// One post at a time, newest first; stale posts are dropped rather than falling behind.
 const queue = [];
 let busy = false;
 async function pump() {
@@ -53,31 +79,7 @@ async function pump() {
   busy = true;
   const { post, candidates } = queue.pop();
   try {
-    const verdict = await judge(post, candidates);
-    if (verdict) {
-      stats.judged++;
-      const graded = verdict.market ?? candidates[0]; // "none" calls are graded against the top match
-      const call = {
-        id: `${Date.now()}-${stats.judged}`,
-        text: post.text.slice(0, 500),
-        candidates: candidates.map(brief),
-        effect: verdict.effect,
-        strength: verdict.strength,
-        reason: verdict.reason,
-        market: brief(graded),
-        priceAtCall: await midpoint(graded.yesToken).catch(() => null),
-        latencyMs: verdict.latencyMs,
-        servedBy: verdict.servedBy,
-        mubitRequestId: verdict.mubitRequestId,
-        sessionId: verdict.sessionId,
-        usage: verdict.usage,
-        cost: verdict.cost,
-        input: verdict.input, // exact text the model saw, so Model Kombat can replay it fairly
-        promptVersion: PROMPT_VERSION,
-      };
-      emit("call", call);
-      await record("calls.jsonl", call);
-    }
+    if (await passesGate(post, candidates)) await analyse(post, candidates);
   } catch (e) {
     emit("problem", { message: e.message });
     console.error(e.message);
@@ -86,7 +88,35 @@ async function pump() {
   setImmediate(pump);
 }
 
+async function analyse(post, candidates) {
+  const verdict = await judge(post, candidates);
+  if (!verdict) return;
+  stats.judged++;
+  const graded = verdict.market ?? candidates[0]; // "none" calls are graded against the top match
+  const call = {
+    id: `${Date.now()}-${stats.judged}`,
+    text: post.text.slice(0, 500),
+    candidates: candidates.map(brief),
+    effect: verdict.effect,
+    strength: verdict.strength,
+    reason: verdict.reason,
+    market: brief(graded),
+    priceAtCall: await midpoint(graded.yesToken).catch(() => null),
+    latencyMs: verdict.latencyMs,
+    servedBy: verdict.servedBy,
+    mubitRequestId: verdict.mubitRequestId,
+    sessionId: verdict.sessionId,
+    usage: verdict.usage,
+    cost: verdict.cost,
+    input: verdict.input, // exact text the model saw, so Model Kombat can replay it fairly
+    promptVersion: PROMPT_VERSION,
+  };
+  emit("call", call);
+  await record("calls.jsonl", call);
+}
+
 streamPosts((post) => {
+  if (!worthChecking(post.text)) return stats.dropped++;
   const candidates = matchMarkets(post.text);
   if (!candidates.length) return;
   stats.matched++;
