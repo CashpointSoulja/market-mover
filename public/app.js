@@ -39,6 +39,7 @@ function renderStats(s) {
     ["Graded by the market", s.decided],
     ["Accuracy", s.decided ? `${Math.round((100 * s.correct) / s.decided)}%` : "–"],
     ["Paper P&L", `${s.pnl >= 0 ? "+" : "−"}$${Math.abs(s.pnl).toFixed(2)}`],
+    ["Spent via Mubit today (est.)", s.spendToday == null ? "–" : `$${s.spendToday.toFixed(2)} · ${s.spendCallsToday} AI calls`],
     ["Live markets", s.markets],
   ];
   $("stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");

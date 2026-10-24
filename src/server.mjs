@@ -1,4 +1,5 @@
 import http from "node:http";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { refreshMarkets, matchMarkets, markets } from "./markets.mjs";
 import { streamPosts } from "./news.mjs";
@@ -65,9 +66,9 @@ async function passesGate(post, candidates) {
   const { input, sessionId } = prepare(post, candidates);
   const g = await gate(input, sessionId);
   stats.gated++;
+  record("gate.jsonl", { at: Date.now(), model: gateModel(), relevant: g.relevant, text: post.text.slice(0, 500), markets: candidates.map(brief), latencyMs: g.latencyMs, cost: g.cost });
   if (g.relevant) return true;
   stats.filtered++;
-  record("filtered.jsonl", { at: Date.now(), text: post.text.slice(0, 500), markets: candidates.map(brief), latencyMs: g.latencyMs, cost: g.cost });
   return false;
 }
 
@@ -128,7 +129,18 @@ streamPosts((post) => {
 
 startGrader(onGraded);
 streamChain((tick) => emit("chain", tick)).catch((e) => console.error("chain:", e.message));
-setInterval(() => emit("stats", { ...stats, analyst: analystStatus(), markets: markets.size, queue: queue.length }), 2000);
+setInterval(
+  () =>
+    emit("stats", {
+      ...stats,
+      analyst: analystStatus(),
+      markets: markets.size,
+      queue: queue.length,
+      spendToday: spendNow?.todayUsd ?? null,
+      spendCallsToday: spendNow?.callsToday ?? null,
+    }),
+  2000,
+);
 
 // Night Shift: how the analyst is doing per model version and over time, graded by the market.
 async function nightShift() {
@@ -165,12 +177,59 @@ async function nightShift() {
   };
 }
 
+// Spend through Mubit, estimated from token counts × Anthropic list prices (Mubit's Billing page is the real bill).
+// Read by the CodexBar "Mubit" plugin.
+async function spend() {
+  const rows = [
+    ...(await readJsonl("calls.jsonl")).map((c) => ({ at: callTime(c) * 1000, model: c.servedBy, cost: c.cost })),
+    ...(await readJsonl("filtered.jsonl")).map((g) => ({ at: g.at, model: "claude-haiku-4-5", cost: g.cost })), // older gate log
+    ...(await readJsonl("gate.jsonl")).map((g) => ({ at: g.at, model: g.model, cost: g.cost })),
+    ...(await readJsonl("kombat.jsonl")),
+  ].filter((r) => typeof r.cost === "number");
+  const midnight = new Date().setHours(0, 0, 0, 0);
+  const sum = (list) => list.reduce((s, r) => s + r.cost, 0);
+  const today = rows.filter((r) => r.at >= midnight);
+  const byModel = Object.entries(Object.groupBy(today, (r) => r.model ?? "unknown"))
+    .map(([model, list]) => ({ model, usd: sum(list), calls: list.length }))
+    .sort((a, b) => b.usd - a.usd);
+  const hourly = Object.entries(Object.groupBy(rows.filter((r) => r.at >= Date.now() - 24 * 3600_000), (r) => new Date(r.at).getHours()))
+    .map(([hour, list]) => ({ hour: `${hour.padStart(2, "0")}:00`, usd: sum(list) }));
+  return {
+    todayUsd: sum(today),
+    last24hUsd: sum(rows.filter((r) => r.at >= Date.now() - 24 * 3600_000)),
+    totalUsd: sum(rows),
+    callsToday: today.length,
+    byModel,
+    hourly,
+    note: "Estimate from token counts × Anthropic list prices. Mubit's Billing page is the source of truth.",
+  };
+}
+
+// Keep a fresh spend figure for the scoreboard, and publish it to a secret GitHub Gist for the CodexBar
+// "Mubit" plugin (CodexBar only reads https:// sources). Only the spend numbers leave this machine.
+let spendNow = null;
+let gistPublishedAt = 0;
+async function refreshSpend() {
+  spendNow = await spend().catch(() => spendNow);
+  if (!process.env.SPEND_GIST_ID || !spendNow || Date.now() - gistPublishedAt < 5 * 60_000) return; // every gist edit is a revision
+  gistPublishedAt = Date.now();
+  const body = JSON.stringify({ files: { "spend.json": { content: JSON.stringify({ ...spendNow, updatedAt: new Date().toISOString() }, null, 2) } } });
+  const gh = execFile("gh", ["api", "-X", "PATCH", `/gists/${process.env.SPEND_GIST_ID}`, "--input", "-"], (err) => err && console.error("spend gist:", err.message));
+  gh.stdin.end(body);
+}
+refreshSpend();
+setInterval(refreshSpend, 30_000);
+
 let kombatRunning = false;
 async function startKombat(limit) {
   if (kombatRunning) return false;
   kombatRunning = true;
   emit("kombat", { status: "started" });
-  runKombat({ limit, onRound: (r) => emit("kombat", { status: "round", ...r }) })
+  const onRound = (r) => {
+    emit("kombat", { status: "round", ...r });
+    for (const f of r.results) if (f.cost) record("kombat.jsonl", { at: Date.now(), model: f.name, cost: f.cost });
+  };
+  runKombat({ limit, onRound })
     .then((board) => emit("kombat", { status: "done", board }))
     .catch((e) => emit("kombat", { status: "error", message: e.message }))
     .finally(() => (kombatRunning = false));
@@ -191,6 +250,7 @@ http
       return;
     }
     if (url.pathname === "/api/nightshift") return json(res, await nightShift());
+    if (url.pathname === "/api/spend") return json(res, await spend());
     if (url.pathname === "/api/kombat" && req.method === "POST") {
       const started = await startKombat(Math.min(Number(url.searchParams.get("rounds")) || 20, 50));
       return json(res, { started }, started ? 202 : 409);

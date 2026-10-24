@@ -42,7 +42,8 @@ export async function runKombat({ limit = 20, challengers = CHALLENGERS, onRound
       of: cases.length,
       question: g.market.question,
       truth: g.actual,
-      results: results.map((r) => ({ name: r.name, effect: r.effect, hit: !r.error && isHit(r, g), latencyMs: r.latencyMs, error: r.error })),
+      // cost only for fresh replays; the live answer was already paid for (and logged) when it was made
+      results: results.map((r) => ({ name: r.name, effect: r.effect, hit: !r.error && isHit(r, g), latencyMs: r.latencyMs, error: r.error, cost: r === live ? 0 : r.cost })),
       board: [...board.values()],
     });
   }
