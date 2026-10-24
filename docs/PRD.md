@@ -3,82 +3,97 @@
 | | |
 |---|---|
 | Author | Ayo Ahmed |
-| Status | Hackathon build in progress (Night Shift, 23–25 Oct 2026) |
-| Last updated | 24 Oct 2026 |
+| Status | Hackathon build, live (Night Shift, 23–25 Oct 2026) |
+| Last updated | 24 Oct 2026, ~02:15 |
 
 ## 1. Problem
-News moves prediction-market prices within minutes. To act on it you have to (a) notice the relevant news inside a flood of irrelevant posts and (b) understand what it means for a specific market's outcome. Doing (b) with a frontier AI model works, but it's slow (~2–3 s per call) and costs money on every post, all day. And there's no easy way to know whether the AI's calls are actually any good.
+News moves prediction-market prices within minutes. To act on it you have to (a) find the relevant news inside a flood of irrelevant posts and (b) understand what it means for a specific market's outcome. Doing (b) with a frontier AI model works, but it's slow (~2 s per call) and costs money on every post, all day. And there's normally no cheap way to know whether the AI's calls are any good, or to make it better.
 
 ## 2. Users and personas
 | Persona | Need | What they get |
 |---|---|---|
-| **Niche-market trader** (outside the UK) following esports, live sport or smaller political markets | Hear about market-moving news before the price fully moves, with a reason | Live alerts with direction, strength and a one-line reason |
-| **Fund / market maker** | A machine-readable, timestamped stream of news-driven calls, with a track record | Data feed + graded history |
-| **AI-cost owner** at any company | Proof that a repeated frontier-model job can move to an owned small model without losing quality | A working, measured example of that switch |
-| **Hackathon judges** (secondary) | See a correction turn into a model update, on a real recurring task | Night Shift screen + Model Kombat |
+| **Niche-market trader** (outside the UK): esports, live sport, smaller political markets | Market-moving news before the price fully moves, with a reason | Live alerts: direction, strength, one-line reason, track record |
+| **Fund / market maker** | A machine-readable, timestamped stream of news-driven calls with a graded history | Data feed + graded history |
+| **AI-cost owner** at any company | Proof a repeated frontier-model job can move to an owned small model | A working, measured example of that switch |
+| **Hackathon judges** (secondary) | A correction turning into a model update, on a real recurring task | Night Shift screen, Mubit panel, Model Kombat |
 
 ## 3. Goals and non-goals
 **Goals**
 - G1. Turn the live news firehose into graded, market-specific calls continuously.
 - G2. Grade every call automatically from market prices, with no human labelling.
-- G3. Route every AI call through Mubit, so the task can move to a trained small model.
-- G4. Show measurable improvement between model versions (accuracy, latency, cost).
-- G5. Be honest: report accuracy and paper P&L with their limits, never promised returns.
+- G3. Route every AI call through Mubit and **send every grade back to Mubit as a rating**, so the task moves to a trained small model.
+- G4. Spend as little as possible: free filters first, cheap gate second, analyst last.
+- G5. Show measurable improvement between model versions (accuracy, latency, cost).
+- G6. Be honest: report accuracy against a baseline, and paper P&L with its limits. Never promise returns.
 
 **Non-goals**
-- No real-money trading, and no order placement at all in this version.
+- No real-money trading and no order placement in this version.
 - No posting, replying or spreading content anywhere.
 - No identifying people behind wallets or posts.
 - No price prediction from charts or order books. The analyst reads *news*.
 
 ## 4. User stories
-1. As a trader, I see matched news and the AI's call (up/down/none, strength, reason) within seconds of the post appearing.
-2. As a trader, I see each call turn into ✓ or ✗ ten minutes later, along with the price move.
-3. As a trader, I see running accuracy and paper P&L, so I know whether to trust the calls.
-4. As an AI-cost owner, I see latency and cost per call for the frontier model and for the trained small model side by side.
-5. As a judge, I watch a wrong call become a correction, and a later model version get that kind of call right.
+1. As a trader, I see matched news and the AI's call (up/down/none, strength, reason) within seconds of the post.
+2. As a trader, I see each call turn ✓ or ✗ two minutes later, with the price move.
+3. As a trader, I see accuracy next to the "always say none" baseline, so I know whether the calls beat doing nothing.
+4. As an AI-cost owner, I see what each step costs and how much the free filters save.
+5. As a judge, I watch a graded call go to Mubit as a Good/Bad rating, and see Mubit's small model and its match rate on the Night Shift screen.
 
 ## 5. Functional requirements
-| # | Requirement | Status (24 Oct, early) |
+| # | Requirement | Status |
 |---|---|---|
-| F1 | **Live pipeline:** load ~500 live markets (refresh every 5 min); read Bluesky English posts; match posts to markets needing 2+ shared distinctive words (rarer words weigh more); pass up to 3 candidate markets on | ✅ Built, ~16 matches/min |
-| F2 | **Analyst:** one AI call per matched post, through Mubit; frozen instructions; strict JSON output `{market, effect: up/down/none, strength 1–3, reason}` about the **first listed outcome**; one session per post (hashed id) | ✅ Built, live on Claude Sonnet 5.5 |
-| F3 | **Grader:** record the first outcome's midpoint price at the call; re-check at +10 min. ≥3-point move = up/down, ≤0.5 point = none, anything in between left ungraded. `none` calls are graded against the top-matched market | ✅ Built |
-| F4 | **Paper trading:** $100 on the called side for strength ≥2 calls, marked at +10 min, before fees and spread | ✅ Built |
-| F5 | **On-chain ticker:** read Polymarket's exchange contracts on Polygon (~2.5–3.6 s behind); show fills/sec, wallets per minute and delay | ✅ Built |
-| F6 | **Corrections into Mubit:** send graded outcomes back to Mubit as corrections or feedback | ⏳ Mechanism not in Mubit's public docs; confirming with the Mubit team |
-| F7 | **Night Shift learning screen:** accuracy, latency and cost by model version (prompt version + "served by"); training-example count toward the first training (25 kept examples) | ⏳ Planned |
-| F8 | **Model Kombat:** head-to-head on the same graded calls. Frontier model (Sonnet 5.5) vs the trained small model, with Opus 5.5 as the "final boss": accuracy, speed, cost | ⏳ Planned. Adapters can't be called by name from code ("There is no Mubit model ID"), so the small model's side comes from Mubit's own comparison (Try models / test results) or its automatic routing |
-| F9 | **Screen:** live news, calls with ✓/✗, scoreboard, ticker; works on a laptop and a phone | ✅ Basic version built |
+| F1 | **Live sources:** ~500 live markets (refresh every 5 min); Bluesky English posts | ✅ |
+| F2 | **Free code filter:** drop repeats seen in the last 30 min, posts >40% hashtags/links, posts under 8 words | ✅ ~25% of posts dropped |
+| F3 | **Matching:** 2+ shared distinctive words (rarer words weigh more); up to 3 candidate markets | ✅ ~20 matches/min |
+| F4 | **Free local gate:** open-source zero-shot classifier (DeBERTa-v3 xsmall via transformers.js); drop posts with "fact" probability below `LOCAL_GATE_MIN` (0.5) | ✅ just added; ~20–40 ms, $0 |
+| F5 | **Haiku gate via Mubit:** frozen yes/no "states a specific, new fact about one of these markets?"; strict JSON `{relevant}` | ✅ blocks ~88%; ~0.9 s, ~$0.00045 |
+| F6 | **Analyst via Mubit:** Claude Sonnet 5.5; frozen prompt; strict JSON `{market, effect: up/down/none, strength 1–3, reason}` about the **first listed outcome**; one session per post (hashed id) | ✅ ~1.9 s median, ~$0.0022 |
+| F7 | **Grader:** first outcome's price at the call vs **+2 min** (`GRADE_AFTER_SEC`) from Polymarket price history; ≥3 pts = up/down, ≤0.5 pt = none, in between ungraded; restart-safe, checked every 15 s | ✅ |
+| F8 | **Corrections:** every graded call sent to Mubit as `up`/`down` on its trace, with a one-line comment of what the market did | ✅ 54 sent in the first hour |
+| F9 | **Billing:** real Mubit balance (read live) + free starter-credit use (estimated from tokens); on screen and in CodexBar | ✅ see [billing.md](billing.md) |
+| F10 | **Night Shift:** accuracy, always-none baseline, moves caught, up/down precision, learning curve, per-version table, live Mubit panel (balance, small models, tasks) | ✅ |
+| F11 | **Model Kombat:** replay graded calls through Opus 5.5 and Haiku 4.5 via Mubit (not stored); accuracy, speed, cost | ✅ built; adapter can't be called by name, so its numbers come from Mubit's tests |
+| F12 | **Paper trading:** $100 on the called side for strength ≥2, marked at the grade, before fees and spread | ✅ |
+| F13 | **On-chain ticker:** Polymarket fills from Polygon, ~2.5–3.6 s behind | ✅ |
+| F14 | **Promote the small model** to serve live traffic once Mubit's tests pass | ⏳ endpoint exists, not used yet |
+| F15 | **Deploy** to an always-on host | ⏳ TBD, see [tech-design.md](tech-design.md#deployment) |
 
 ## 6. Metrics
-| Metric | Definition |
-|---|---|
-| **Accuracy** | Correct ÷ graded calls (calls left ungraded by the in-between rule don't count) |
-| **Normalized gain** | (accuracy of version N − accuracy of v1) ÷ (1 − accuracy of v1): how much of the remaining room for improvement a new version captured |
-| **Latency** | Milliseconds per AI call, median and worst |
-| **Cost per graded call** | Token cost per call ÷ the share of calls that end up graded |
-| **Paper P&L** | Sum of paper trades, before fees and spread |
-| Coverage | Matched posts per minute; share of matches the analyst calls non-`none` |
+| Metric | Definition | First hour (24 Oct, 467 graded calls) |
+|---|---|---|
+| **Accuracy** | Correct ÷ graded calls | 88% |
+| **Always-none baseline** | Accuracy if the analyst always said "none" | **96%** |
+| **Moves caught** | Of graded calls where the price really moved, the share the analyst called right | 35% (of 17) |
+| **Up/down precision** | Of the analyst's up/down calls, the share that were right | **11% (of 54)** |
+| **Normalized gain** | (accuracy of version N − accuracy of v1) ÷ (1 − accuracy of v1) | Needs a second version |
+| **Small-model match rate** | Mubit's test: how often the small model agrees with the big one on held-out checks | 41.7% (12 checks), "gated" |
+| **Latency** | ms per step | gate ~0.9 s, analyst ~1.9 s, local filter ~20–40 ms |
+| **Cost per call / per graded call** | Token cost per step; cost ÷ share of calls graded | analyst ~$0.0022 |
+| **Filter savings** | Share of posts stopped before a paid call | ~25% code + local + ~88% gate |
+| **Paper P&L** | Sum of paper trades, before fees and spread | ~$0 so far |
+
+**Reading the first-hour numbers honestly:** the analyst currently does *worse* than always saying "none", because most of its up/down calls (89%) are wrong. Most 2-minute windows are flat. The fixes are: the gate and local filter send it fewer, better posts; our market ratings tell Mubit which calls were wrong; and the edge is in faster-moving markets (live sport, esports).
 
 ## 7. Success criteria
 **Hackathon (code freeze Sun 25 Oct 10:00)**
-- The pipeline runs live through the demo, and every AI call goes through Mubit (a rule).
-- Enough graded calls for a believable accuracy number (target: 100+ graded).
-- At least one trained small-model version shown against the frontier teacher on the same calls.
-- A correction visibly linked to a model update in the demo (the "Use of Mubit" criterion).
+- Pipeline runs live through the demo; every LLM call goes through Mubit (a rule).
+- A correction visibly sent to Mubit and a Mubit small model shown with its match rate (the "Use of Mubit" criterion). ✅ both working.
+- 500+ graded calls and an honest comparison against the always-none baseline.
+- Up/down precision clearly above today's 11% after the filters and ratings take effect.
 - Demo under the time limit, with a recorded fallback.
 
 **v1 product**
-- Accuracy at or above the frontier teacher on graded calls, at lower cost per call and lower latency.
-- Alerts delivered within seconds of a post, with a public graded track record.
-- More sources (news wires, official feeds, esports data) and better market matching.
+- Accuracy above the always-none baseline and up/down precision high enough to act on, on graded calls.
+- Small model promoted and serving most calls at lower cost and latency than the frontier teacher.
+- Faster, cleaner sources (esports data, news wires, official feeds).
 - Legal review per country before any real-money feature.
 
 ## 8. Open questions
-1. How do graded outcomes get into Mubit as corrections? (The public docs show only a Good/Bad rating on a call in the console.)
-2. Does Mubit route live calls to a trained adapter automatically once it passes ("switches only when it does better"), and how would we see that from code?
-3. How long does one training round take, and what are the daily limits for hackathon accounts?
-4. Is +10 minutes the right grading window for every market type? (Live sport may need less; politics more.)
-5. Which niche markets give the best ratio of signal to bot competition?
-6. Which countries could legally take real-money alerts or trading later?
+1. **Undocumented API risk:** ratings, balance and adapters use the Mubit console's own management API with a saved console login. It may change without notice; should we ask Mubit for a supported way?
+2. Do our ratings actually change what Mubit trains on, and how fast does a new adapter version follow?
+3. What does a Mubit "run" ($0.005) cover exactly? The balance falls with Mubit's own rating and training work, not per AI call.
+4. Does Mubit route live calls to an adapter automatically once it passes, or only after we promote it?
+5. Is +2 minutes right for every market type? Live sport moves in seconds; politics may need longer.
+6. Which niche markets give the best ratio of signal to bot competition?
+7. **UK legality:** which countries could legally receive real-money alerts or trading later?
+8. Using Jev (TypeSafe) as a comparison-only Model Kombat challenger outside Mubit: OK with the organisers?

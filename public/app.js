@@ -34,6 +34,7 @@ function renderStats(s) {
     ["Posts read", s.posts.toLocaleString()],
     ["Dropped (repeats, spam, too short)", s.dropped.toLocaleString()],
     ["Matched to a market", s.matched.toLocaleString()],
+    ["Local filter (free, ~20 ms): blocked", (s.localBlocked ?? 0).toLocaleString()],
     ["Haiku gate: passed", `${s.gated - s.filtered} of ${s.gated}`],
     ["Analyst calls", s.judged],
     ["Graded by the market", s.decided],
@@ -48,7 +49,19 @@ function renderStats(s) {
   $("stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
 }
 
-const es = new EventSource("/events");
+// Live updates by polling once a second (works through tunnels that buffer streaming responses).
+const handlers = {};
+const es = { addEventListener: (type, fn) => (handlers[type] = fn) };
+let cursor = 0;
+async function poll() {
+  try {
+    const { seq, events } = await (await fetch(`/api/feed?since=${cursor}`)).json();
+    for (const e of events) handlers[e.type]?.({ data: JSON.stringify(e.data) });
+    cursor = seq;
+  } catch {}
+  setTimeout(poll, 1000);
+}
+setTimeout(poll, 0);
 es.addEventListener("match", (e) => {
   const m = JSON.parse(e.data);
   prepend("news", `<li><p>${esc(m.text)}</p><small>${m.markets.map(esc).join(" · ")}</small></li>`);

@@ -9,12 +9,13 @@ import { startGrader, readJsonl, callTime } from "./grader.mjs";
 import { streamChain } from "./chain.mjs";
 import { runKombat } from "./kombat.mjs";
 import { startCorrections } from "./corrections.mjs";
+import { loadLocalGate, factScore, LOCAL_GATE_MODEL } from "./localGate.mjs";
 import { adminAvailable, account, adapters, lanes } from "./mubitAdmin.mjs";
-import { emit, record, recentOf, subscribe } from "./store.mjs";
+import { emit, record, recentOf, subscribe, feed } from "./store.mjs";
 
 const PORT = Number(process.env.PORT || 4321);
 const STAKE = 100;
-const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0, ratedUp: 0, ratedDown: 0 };
+const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0, ratedUp: 0, ratedDown: 0, localBlocked: 0 };
 
 // Free first pass: skip short posts, posts that are mostly hashtags/links, and repeats seen in the last 30 minutes.
 const seen = new Map();
@@ -63,7 +64,21 @@ function onGraded(g) {
 }
 
 // Cheap AI gate (Haiku via Mubit): only posts that state a real, new fact go on to the analyst.
+const LOCAL_GATE_MIN = Number(process.env.LOCAL_GATE_MIN || 0.5);
+loadLocalGate()
+  .then(() => console.log(`Local gate ready: ${LOCAL_GATE_MODEL}`))
+  .catch((e) => console.error("local gate:", e.message));
+
 async function passesGate(post, candidates) {
+  // 1) Free local classifier drops clear chatter before any paid call.
+  const started = Date.now();
+  const score = await factScore(post.text).catch(() => null);
+  if (score != null && score < LOCAL_GATE_MIN) {
+    stats.localBlocked++;
+    record("gate.jsonl", { at: Date.now(), model: `local:${LOCAL_GATE_MODEL}`, relevant: false, score, text: post.text.slice(0, 500), markets: candidates.map(brief), latencyMs: Date.now() - started, cost: 0 });
+    return false;
+  }
+  // 2) Haiku via Mubit decides the rest (and teaches Mubit's small gate model).
   if (!gateModel()) return true;
   const { input, sessionId } = prepare(post, candidates);
   const g = await gate(input, sessionId);
@@ -311,15 +326,21 @@ http
   .createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/events") {
-      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
       for (const type of ["match", "call", "grade", "chain", "stats", "mubit"])
         for (const e of recentOf(type, ["chain", "stats", "mubit"].includes(type) ? 1 : 25)) res.write(`event: ${type}\ndata: ${JSON.stringify(e)}\n\n`);
       subscribe(res);
       return;
     }
+    if (url.pathname === "/api/feed") return json(res, feed(Number(url.searchParams.get("since")) || 0));
     if (url.pathname === "/api/nightshift") return json(res, await nightShift());
     if (url.pathname === "/api/spend") return json(res, await spend());
     if (url.pathname === "/api/mubit") return json(res, mubitNow ?? { unavailable: true });
+    // Through the public tunnel (Cloudflare adds cf-connecting-ip), visitors can watch but not spend credits.
+    const isPublic = Boolean(req.headers["cf-connecting-ip"]);
+    if (url.pathname === "/api/kombat" && req.method === "POST" && isPublic && url.searchParams.get("key") !== process.env.ADMIN_KEY) {
+      return json(res, { error: "Model Kombat spends AI credits, so it can only be started by the owner." }, 403);
+    }
     if (url.pathname === "/api/kombat" && req.method === "POST") {
       const started = await startKombat(Math.min(Number(url.searchParams.get("rounds")) || 20, 50));
       return json(res, { started }, started ? 202 : 409);

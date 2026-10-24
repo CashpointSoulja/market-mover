@@ -3,72 +3,84 @@
 Author: Ayo Ahmed · 24 Oct 2026
 
 ## Shape of the system
-One small Node.js server (no framework, two dependencies: the official Anthropic SDK and zod). It runs four live loops and streams everything to a browser screen.
+One small Node.js server (no web framework; dependencies: the official Anthropic SDK, zod, and transformers.js for the local classifier). It runs several live loops and streams everything to a browser screen.
 
 ```
-                    ┌────────────────────── src/server.mjs ───────────────────────┐
-Gamma API ─────────►│ markets.mjs  top ~500 markets, refreshed every 5 min        │
-(public)            │      │ word index                                            │
-Bluesky Jetstream ─►│ news.mjs ──► matchMarkets() ──► queue (newest first, ≤10)   │
-(public WebSocket)  │                                    │                         │
-                    │                          analyst.mjs ──► Mubit ──► Claude    │
-                    │                                    │                         │
-Polymarket CLOB ───►│ prices.mjs  midpoint at call ──► grader.mjs (+10 min)        │
-(public)            │                                    │                         │
-Polygon RPC ───────►│ chain.mjs   exchange fills every 2 s                         │
-(public node)       │                                    ▼                         │
-                    │ store.mjs ──► data/*.jsonl  +  Server-Sent Events ──► screen │
-                    └──────────────────────────────────────────────────────────────┘
+                      ┌────────────────────────── src/server.mjs ──────────────────────────┐
+Gamma API ───────────►│ markets.mjs   ~500 markets, every 5 min, word index                 │
+Bluesky Jetstream ───►│ news.mjs ─► code filter ─► matchMarkets() ─► queue (newest first)   │
+                      │                                │                                     │
+                      │        localGate.mjs (free, local) ─► analyst.mjs gate ─► analyst   │──► Mubit ──► Claude
+                      │                                │                                     │    (Anthropic route)
+Polymarket CLOB ─────►│ prices.mjs   price at call     ▼                                     │
+Polymarket history ──►│ grader.mjs   price at +2 min ─► grade ─► corrections.mjs ───────────│──► Mubit console API
+Polygon RPC ─────────►│ chain.mjs    exchange fills every 2 s                                │    (ratings, balance,
+                      │ mubitAdmin.mjs  balance · adapters · tasks (every 60 s)              │     adapters, tasks)
+                      │ store.mjs ─► data/*.jsonl + Server-Sent Events ─► screens            │
+                      └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Components
 | File | Job | Key details |
 |---|---|---|
-| `markets.mjs` | Live markets + matching | Gamma `/markets?active=true&closed=false&order=volume24hr`, 5 pages × 100. Keeps outcome names and prices, plus the first outcome's order-book token. Word index ignores words under 4 letters, a stop list, and words found in >25 markets. **A match needs 2+ shared words**: single-word matching produced ~270 matches/min of junk in testing; this rule gives ~16/min |
-| `news.mjs` | Bluesky firehose | Jetstream `app.bsky.feed.post`, `create` events only, English only, auto-reconnect |
-| `analyst.mjs` | The one AI call | Official Anthropic SDK pointed at Mubit (`https://api.mubit.ai/anthropic`), model `claude-sonnet-5-5`, effort `low`, thinking off (`between_tools`), strict JSON schema, `metadata.user_id` = SHA-256 of the post id (first 32 hex). Records Mubit's `x-middleware-request-id`. `dryRun` sends `x-middleware-store: false` for connection tests |
-| `prices.mjs` | Live price | CLOB `/midpoint?token_id=…` (~70 ms round trip measured) |
-| `grader.mjs` | Market grading | +10 min re-check; ≥0.03 = up/down, ≤0.005 = none, otherwise ungraded |
-| `chain.mjs` | On-chain ticker | Polls Polygon every 2 s, staying 2 blocks behind the head (public nodes disagree about the newest block). Exchange contracts `0xe111180000d2663c0091e4f400237545b87b996b` and `0xe2222d279d744050d28e00520010520000310f59`, fill event topic starting `0xd543adfd` |
-| `store.mjs` | Events + logs | In-memory ring of the last 200 events per type; append-only `calls.jsonl` and `grades.jsonl` |
-| `public/` | Screen | Plain HTML/CSS/JS over Server-Sent Events (a one-way live stream from server to browser) |
+| `markets.mjs` | Live markets + matching | Gamma `/markets?active=true&closed=false&order=volume24hr`, 5 pages × 100; keeps outcome names, prices, first outcome's token. A match needs **2+ shared distinctive words** |
+| `news.mjs` | Bluesky firehose | Jetstream `app.bsky.feed.post`, `create` events, English only, auto-reconnect |
+| `server.mjs` | Code filter | Drops repeats seen in the last 30 min, posts >40% hashtags/links, posts under 8 words |
+| `localGate.mjs` | Free gate | `Xenova/nli-deberta-v3-xsmall` zero-shot via transformers.js, quantised; labels "a specific new fact, result or announcement" vs "an opinion, joke, advert or chatter"; drops fact probability < `LOCAL_GATE_MIN`. ~15 s to load, then ~20–40 ms a post. GLiClass (ModernBERT) is the Python-only alternative |
+| `analyst.mjs` | AI calls via Mubit | Official Anthropic SDK pointed at `https://api.mubit.ai/anthropic`. **Gate:** `claude-haiku-4-5`, `{relevant}`. **Analyst:** `claude-sonnet-5-5`, effort `low`, thinking off (`between_tools`), `{market, effect, strength, reason}`. Strict JSON schema; `metadata.user_id` = SHA-256 of the post id (first 32 hex); records `x-middleware-request-id`; `dryRun` sends `x-middleware-store: false` |
+| `prices.mjs` | Live price | CLOB `/midpoint?token_id=…` (~70 ms) |
+| `grader.mjs` | Market grading | Every 15 s, grades calls older than `GRADE_AFTER_SEC` (120) + 45 s, using CLOB `/prices-history` (1-minute points). Restart-safe |
+| `corrections.mjs` | Ratings to Mubit | Every 30 s: matches graded calls to Mubit traces by `metadata.user_id` (analyst task only), posts `up`/`down` + comment |
+| `mubitAdmin.mjs` | Mubit console API | See [mubit-integration.md](mubit-integration.md) |
+| `kombat.mjs` | Model Kombat | Replays graded calls' exact input through other models via Mubit, not stored |
+| `chain.mjs` | On-chain ticker | Polygon every 2 s, 2 blocks behind head; exchanges `0xe111…996b`, `0xe222…0f59`; fill topic `0xd543adfd…` |
+| `store.mjs` | Events + logs | Last 200 events per type in memory; append-only JSONL in `data/` |
 
-## The AI call (frozen)
-Mubit groups calls into one **task** only while the model, instructions and output format stay identical. Change any of them and the example count starts again. So:
-- The instructions, schema and settings in `analyst.mjs` are **frozen**, tagged `PROMPT_VERSION = "v1"`.
-- Any change means bumping the version on purpose and accepting a new task.
+## Data files (`data/`, git-ignored)
+| File | One line per |
+|---|---|
+| `calls.jsonl` | Analyst call: post text, candidates, verdict, price at call, latency, tokens, cost, session id, Mubit request id, exact input |
+| `grades.jsonl` | Graded call: call fields + price after, move, market's answer, correct, paper P&L |
+| `gate.jsonl` | Gate decision (local or Haiku): relevant, score, latency, cost |
+| `ratings.jsonl` | Correction sent to Mubit: call id, trace id, up/down |
+| `balance.jsonl` | Mubit balance reading: balance, runs left, price per run |
+| `kombat.jsonl` | Cost of each Model Kombat replay |
+| `mubit-console-state.json` | Saved Mubit console login (sensitive; mode 600) |
+| `models/` | Cached local classifier |
 
-Output schema:
-```json
-{ "market": 1 | 2 | 3 | null, "effect": "up" | "down" | "none", "strength": 1 | 2 | 3, "reason": "≤15 words" }
-```
-`effect` is always about the **first listed outcome**. Head-to-head markets have no "Yes": their outcomes are names (e.g. "Tampa Bay Rays", "Milwaukee Brewers"). An early test showed the model guessing which side "Yes" meant, so each market is now listed with every outcome's name and price.
+## The AI calls (frozen)
+Mubit groups calls into a **task** only while model, instructions, tools and output format stay identical. Change one and the example count starts again. Both prompts are frozen (`PROMPT_VERSION = "v1"` for the analyst); changing them means bumping the version on purpose. We kept the analyst prompt's "next 10 minutes" wording when grading moved to 2 minutes, so Mubit's task wasn't reset.
 
-## Grading rule (why decisive-only)
-Price moves are noisy labels: prices wobble for reasons unrelated to any one post. We only count clear outcomes:
+`effect` is always about the **first listed outcome**: head-to-head markets have no "Yes" (outcomes are names like "Tampa Bay Rays"), and an early test guessed the wrong side.
 
-| Move of the first outcome after 10 min | Label |
+## Grading rule (decisive only)
+| Move of the first outcome 2 min after the call | Label |
 |---|---|
 | ≥ +3 points | `up` |
 | ≤ −3 points | `down` |
 | within ±0.5 point | `none` |
-| anything else | **not graded** |
+| anything else | not graded |
 
-## Mubit integration: known and unknown
-| Known (tested 24 Oct) | Unknown (asking the Mubit team) |
-|---|---|
-| Anthropic route works with the official SDK; first call ~2.4 s, ~736 in / ~64 out tokens | How graded outcomes become corrections (no correction API in the public docs) |
-| Starter credit covers `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-4-5` on this route | Training time per round, and hackathon daily limits |
-| OpenAI's route rejects `metadata` unless `store` is on, one reason we use the Anthropic route | Whether live calls are routed to a passing adapter automatically, and how "served by" shows it |
-| Adapters can't be called by name ("There is no Mubit model ID"); compare them in Try models | — |
-| First training at 25 kept examples; daily limits reset 00:00 UTC | — |
+"None" calls are graded against the top-matched market.
 
-## Model Kombat (planned)
-Same graded calls, three fighters: **Claude Sonnet 5.5** (the teacher), the **trained small model**, and **Claude Opus 5.5** as the final boss. We compare accuracy, latency and cost per call. Because adapters can't be called from code, the small model's numbers come from Mubit's own test results and Try models comparison, or from live calls if Mubit routes to it automatically.
+## Deployment
+**Status: TBD, not deployed.** Constraints:
+- An **always-on process**: outbound WebSockets (Bluesky), polling (Polygon, price history), timers, and a Server-Sent Events stream to the screen.
+- **Disk** for the JSONL logs (or a database) so history survives restarts.
+- Secrets: the Mubit key, and the console login if ratings and balance should run in the cloud.
+- **Only one copy may run at a time**, or every AI call and rating is doubled.
+- The Kombat button spends credits, so a public deployment needs it protected.
+
+| Option | Fit | Notes |
+|---|---|---|
+| Render, Frankfurt, always-on plan | Good | Free plan sleeps after 15 min idle (slow first load); always-on is a paid plan; disk is extra |
+| Fly.io, London (lhr) | Good | Small always-on VM; needs a card |
+| Vercel | Poor for the worker | Serverless functions don't run a 24/7 firehose; fine for a static front end only |
+| Laptop for the demo | Works today | Fastest to show at the venue; not reachable by others |
 
 ## Limits
-- Free public Polygon node: occasional "invalid block range" errors and lag spikes; use a dedicated provider for anything past a demo.
-- Polymarket's public trades API is ~4 minutes behind and updates in batches, so it's used for analysis only.
-- Pending grades live in memory: a restart loses calls that haven't been graded yet (they're still in `calls.jsonl`).
-- One AI call at a time; stale posts are dropped rather than queued up.
-- Bluesky is one source. Faster, cleaner news (wires, official feeds) is on the roadmap.
+- Free public Polygon node: occasional errors and lag; dedicated provider for production.
+- Polymarket's public trades API is ~4 min behind and batched: analysis only.
+- One post at a time through the gates and analyst; stale posts are dropped.
+- The Mubit console API is undocumented and briefly returned `503 engine_unreachable` during testing; the app logs it and retries on the next loop.
+- The local classifier mistakes confident opinions for facts, which is why it only drops clear chatter and the Haiku gate decides the rest.

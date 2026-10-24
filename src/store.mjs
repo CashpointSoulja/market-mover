@@ -12,8 +12,25 @@ export function subscribe(res) {
   res.on("close", () => clients.delete(res));
 }
 
+// Every event also gets a sequence number, so screens can poll "what's new since #N" (tunnels and proxies
+// that buffer streaming responses still pass ordinary requests).
+let seq = 0;
+const log = [];
+export function feed(since) {
+  if (!since || since > seq) return { seq, events: replay() }; // first load, or the server restarted
+  return { seq, events: log.filter((e) => e.seq > since) };
+}
+function replay() {
+  const out = [];
+  for (const type of ["match", "call", "grade", "chain", "stats", "mubit"])
+    for (const data of recentOf(type, ["chain", "stats", "mubit"].includes(type) ? 1 : 25)) out.push({ seq, type, data });
+  return out;
+}
+
 export function emit(type, payload) {
   const event = { at: Date.now(), ...payload };
+  log.push({ seq: ++seq, type, data: event });
+  if (log.length > 1000) log.shift();
   const list = recent.get(type) ?? [];
   list.push(event);
   if (list.length > 200) list.shift();
