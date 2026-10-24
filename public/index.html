@@ -36,12 +36,14 @@
 
     <div id="nightshift" class="view page" hidden>
       <h2 class="pixel">★ NIGHT SHIFT ★</h2>
-      <p class="lede">Every call is graded by what the market did 10 minutes later. Wrong calls are the corrections Mubit learns from.</p>
+      <p class="lede">Every call is graded by what the market did 2 minutes later. Wrong calls are the corrections Mubit learns from.</p>
       <div id="ns-cards" class="cards"></div>
       <h3>Learning curve (15-minute windows)</h3>
       <div id="ns-curve" class="curve"></div>
       <h3>By version</h3>
       <table id="ns-versions"></table>
+      <h3>Mubit (live from the console)</h3>
+      <div id="ns-mubit"><p class="muted">Loading Mubit…</p></div>
       <div class="mubit-box">
         <b>Mubit</b> groups these calls into one task and trains a small model for it once it has 25 kept examples.
         Each version is tested against the big model, then compared in Mubit's Try models.

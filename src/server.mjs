@@ -8,11 +8,13 @@ import { midpoint } from "./prices.mjs";
 import { startGrader, readJsonl, callTime } from "./grader.mjs";
 import { streamChain } from "./chain.mjs";
 import { runKombat } from "./kombat.mjs";
+import { startCorrections } from "./corrections.mjs";
+import { adminAvailable, account, adapters, lanes } from "./mubitAdmin.mjs";
 import { emit, record, recentOf, subscribe } from "./store.mjs";
 
 const PORT = Number(process.env.PORT || 4321);
 const STAKE = 100;
-const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0 };
+const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0, ratedUp: 0, ratedDown: 0 };
 
 // Free first pass: skip short posts, posts that are mostly hashtags/links, and repeats seen in the last 30 minutes.
 const seen = new Map();
@@ -128,6 +130,63 @@ streamPosts((post) => {
 }, stats);
 
 startGrader(onGraded);
+
+// Mubit side: corrections (market verdict -> Good/Bad rating), balance, tasks and trained adapters.
+for (const r of await readJsonl("ratings.jsonl")) r.rating === "up" ? stats.ratedUp++ : stats.ratedDown++;
+let mubitNow = null;
+async function refreshMubit() {
+  try {
+    const [acct, ads, ls] = await Promise.all([account(), adapters(), lanes()]);
+    const today = (await readJsonl("balance.jsonl")).filter((b) => b.at >= new Date().setHours(0, 0, 0, 0));
+    const last = today.at(-1);
+    if (!last || Date.now() - last.at > 5 * 60_000 || last.balanceUsd !== acct.balanceUsd) {
+      const row = { at: Date.now(), ...acct };
+      await record("balance.jsonl", row);
+      today.push(row);
+    }
+    mubitNow = {
+      ...acct,
+      spentFromBalanceToday: today.length ? today[0].balanceUsd - acct.balanceUsd : 0,
+      adapters: ads.map((a) => {
+        const v = a.versions?.at(-1) ?? {};
+        return {
+          id: a.adapter_id,
+          baseModel: a.base_model,
+          version: v.version,
+          status: v.status,
+          promotion: v.promotion_state,
+          rolloutPercent: v.rollout_percent,
+          verdict: v.gate_advisory?.verdict ?? null,
+          passRate: v.gate_advisory?.pass_rate ?? null,
+          reason: v.gate_advisory?.reason ?? null,
+        };
+      }),
+      tasks: ls.map((l) => ({
+        name: l.name ?? l.label,
+        adapterId: l.adapter_id,
+        calls: l.counts?.traces ?? 0,
+        trainable: l.counts?.trainable ?? 0,
+        ratedUp: l.counts?.rated_up ?? 0,
+        ratedDown: l.counts?.rated_down ?? 0,
+        unrated: l.counts?.unrated ?? 0,
+      })),
+      checkedAt: Date.now(),
+    };
+    emit("mubit", mubitNow);
+  } catch (e) {
+    console.error("mubit status:", e.message);
+  }
+}
+if (await adminAvailable()) {
+  refreshMubit();
+  setInterval(refreshMubit, 60_000);
+  startCorrections((r) => {
+    r.rating === "up" ? stats.ratedUp++ : stats.ratedDown++;
+    emit("rated", r);
+  });
+} else {
+  console.log("Mubit console login not found: run `node data/tools/mubit-console.mjs` for balance, ratings and adapters.");
+}
 streamChain((tick) => emit("chain", tick)).catch((e) => console.error("chain:", e.message));
 setInterval(
   () =>
@@ -138,6 +197,9 @@ setInterval(
       queue: queue.length,
       spendToday: spendNow?.todayUsd ?? null,
       spendCallsToday: spendNow?.callsToday ?? null,
+      mubitBalance: mubitNow?.balanceUsd ?? null,
+      mubitRunsLeft: mubitNow?.runsLeft ?? null,
+      mubitSpentToday: mubitNow?.spentFromBalanceToday ?? null,
     }),
   2000,
 );
@@ -201,7 +263,13 @@ async function spend() {
     callsToday: today.length,
     byModel,
     hourly,
-    note: "Estimate from token counts × Anthropic list prices. Mubit's Billing page is the source of truth.",
+    mubit: mubitNow && {
+      balanceUsd: mubitNow.balanceUsd,
+      runsLeft: mubitNow.runsLeft,
+      usdPerRun: mubitNow.usdPerRun,
+      spentFromBalanceToday: mubitNow.spentFromBalanceToday,
+    },
+    note: "Two parts: Mubit balance (real money, read from Mubit, spent per run on rating and training) and provider calls covered by the starter credit (estimated from token counts × Anthropic list prices).",
   };
 }
 
@@ -244,13 +312,14 @@ http
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      for (const type of ["match", "call", "grade", "chain", "stats"])
-        for (const e of recentOf(type, type === "chain" || type === "stats" ? 1 : 25)) res.write(`event: ${type}\ndata: ${JSON.stringify(e)}\n\n`);
+      for (const type of ["match", "call", "grade", "chain", "stats", "mubit"])
+        for (const e of recentOf(type, ["chain", "stats", "mubit"].includes(type) ? 1 : 25)) res.write(`event: ${type}\ndata: ${JSON.stringify(e)}\n\n`);
       subscribe(res);
       return;
     }
     if (url.pathname === "/api/nightshift") return json(res, await nightShift());
     if (url.pathname === "/api/spend") return json(res, await spend());
+    if (url.pathname === "/api/mubit") return json(res, mubitNow ?? { unavailable: true });
     if (url.pathname === "/api/kombat" && req.method === "POST") {
       const started = await startKombat(Math.min(Number(url.searchParams.get("rounds")) || 20, 50));
       return json(res, { started }, started ? 202 : 409);

@@ -13,7 +13,7 @@ function prepend(listId, html, max = 40) {
 }
 
 function verdictHtml(c) {
-  if (!("correct" in c)) return `<span class="muted">grading at +10 min</span>`;
+  if (!("correct" in c)) return `<span class="muted">grading at +2 min</span>`;
   const moved = `moved ${(c.move * 100).toFixed(1)} pts`;
   if (c.correct == null) return `<span class="muted">${moved} · too small to grade</span>`;
   const pnl = c.pnl ? ` · paper ${c.pnl >= 0 ? "+" : "−"}$${Math.abs(c.pnl).toFixed(2)}` : "";
@@ -39,7 +39,10 @@ function renderStats(s) {
     ["Graded by the market", s.decided],
     ["Accuracy", s.decided ? `${Math.round((100 * s.correct) / s.decided)}%` : "–"],
     ["Paper P&L", `${s.pnl >= 0 ? "+" : "−"}$${Math.abs(s.pnl).toFixed(2)}`],
-    ["Spent via Mubit today (est.)", s.spendToday == null ? "–" : `$${s.spendToday.toFixed(2)} · ${s.spendCallsToday} AI calls`],
+    ["Corrections sent to Mubit", `${s.ratedUp} Good · ${s.ratedDown} Bad`],
+    ["Mubit balance", s.mubitBalance == null ? "–" : `$${s.mubitBalance.toFixed(2)} · ${s.mubitRunsLeft.toLocaleString()} runs left`],
+    ["Spent from balance today", s.mubitSpentToday == null ? "–" : `$${s.mubitSpentToday.toFixed(3)}`],
+    ["Free credit used today (est.)", s.spendToday == null ? "–" : `$${s.spendToday.toFixed(2)} · ${s.spendCallsToday} AI calls`],
     ["Live markets", s.markets],
   ];
   $("stats").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join("");
@@ -93,7 +96,7 @@ async function loadNightShift() {
           return `<div class="bar-row"><span>${t}</span><div class="bar"><i style="width:${(b.accuracy ?? 0) * 100}%"></i></div><span>${pct(b.accuracy)} · ${b.decided} graded</span></div>`;
         })
         .join("")
-    : `<p class="muted">The first grades arrive 10 minutes after the first calls.</p>`;
+    : `<p class="muted">The first grades arrive about 3 minutes after the first calls.</p>`;
   $("ns-versions").innerHTML =
     `<tr><th>Version</th><th>Graded</th><th>Accuracy</th><th>Moves caught</th><th>Avg speed</th><th>Cost/call</th></tr>` +
     ns.versions
@@ -101,6 +104,33 @@ async function loadNightShift() {
       .join("");
 }
 setInterval(() => !$("nightshift").hidden && loadNightShift(), 10_000);
+
+// ---- Mubit panel (Night Shift) ----
+function renderMubit(m) {
+  if (!m || m.unavailable) return ($("ns-mubit").innerHTML = `<p class="muted">Mubit console login not connected.</p>`);
+  const tasks = m.tasks
+    .map((t) => `<tr><td>${esc(t.name)}</td><td>${t.calls}</td><td>${t.trainable}</td><td>${t.ratedUp}</td><td>${t.ratedDown}</td><td>${t.unrated}</td></tr>`)
+    .join("");
+  const models = m.adapters.length
+    ? m.adapters
+        .map(
+          (a) => `<div class="card model"><small>${esc(a.baseModel)} · v${a.version} · ${esc(a.status)} · ${esc(a.promotion)} · ${a.rolloutPercent}% of traffic</small>
+            <b>${a.passRate == null ? "–" : pct(a.passRate)} match vs the big model</b>
+            <small class="${a.verdict === "gated" ? "bad" : "good"}">${esc(a.verdict ?? "not tested yet")}</small>
+            <small>${esc(a.reason ?? "")}</small></div>`,
+        )
+        .join("")
+    : `<p class="muted">No small model yet: Mubit trains one per task once it has 25 kept examples.</p>`;
+  $("ns-mubit").innerHTML = `
+    <div class="cards">
+      <div class="card"><small>Mubit balance (real money)</small><b>$${m.balanceUsd.toFixed(2)}</b><small>${m.runsLeft.toLocaleString()} runs left at $${m.usdPerRun.toFixed(3)} a run</small></div>
+      <div class="card"><small>Spent from balance today</small><b>$${m.spentFromBalanceToday.toFixed(3)}</b><small>Runs = Mubit's own rating and training work</small></div>
+    </div>
+    <h3>Mubit's small models</h3><div class="cards">${models}</div>
+    <h3>Mubit tasks</h3>
+    <table><tr><th>Task</th><th>Calls</th><th>Trainable</th><th>Rated Good</th><th>Rated Bad</th><th>Unrated</th></tr>${tasks}</table>`;
+}
+es.addEventListener("mubit", (e) => renderMubit(JSON.parse(e.data)));
 
 // ---- Model Kombat ----
 const FIGHTER_NAMES = { "claude-opus-5-5": "OPUS · the boss", "claude-haiku-4-5": "HAIKU · the cheap one" };

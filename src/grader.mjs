@@ -1,8 +1,9 @@
-// The market grades every call: the first outcome's price at the call vs 10 minutes later, read from
+// The market grades every call: the first outcome's price at the call vs a few minutes later (GRADE_AFTER_SEC,
+// default 2 minutes: live markets react within a minute or two), read from
 // Polymarket's price history. Grading from history survives restarts and catches up on older calls.
 import { readFile } from "node:fs/promises";
 
-const AFTER_SEC = 600;
+const AFTER_SEC = Number(process.env.GRADE_AFTER_SEC || 120);
 const DECISIVE = 0.03; // 3+ points is a real move
 const FLAT = 0.005; // under half a point is no move; anything in between is left ungraded
 
@@ -27,7 +28,7 @@ function grade(call, after) {
   return { ...call, priceAfter: after, move: Number(move.toFixed(4)), actual, correct: actual == null ? null : actual === call.effect };
 }
 
-export async function startGrader(onGraded, everyMs = 30_000) {
+export async function startGrader(onGraded, everyMs = 15_000) {
   const done = new Set((await readJsonl("grades.jsonl")).map((g) => g.id));
   let running = false;
   const tick = async () => {
@@ -35,7 +36,7 @@ export async function startGrader(onGraded, everyMs = 30_000) {
     running = true;
     const now = Date.now() / 1000;
     for (const call of await readJsonl("calls.jsonl")) {
-      if (done.has(call.id) || call.priceAtCall == null || now < callTime(call) + AFTER_SEC + 60) continue;
+      if (done.has(call.id) || call.priceAtCall == null || now < callTime(call) + AFTER_SEC + 45) continue;
       const after = await priceAt(call.market.yesToken, Math.round(callTime(call) + AFTER_SEC)).catch(() => null);
       if (after == null) continue; // try again next tick
       done.add(call.id);

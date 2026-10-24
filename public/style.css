@@ -287,3 +287,7 @@ th {
 [hidden] {
   display: none !important;
 }
+
+.card.model b {
+  font-size: 16px;
+}
