@@ -15,7 +15,7 @@ import { emit, record, recentOf, subscribe, feed } from "./store.mjs";
 
 const PORT = Number(process.env.PORT || 4321);
 const STAKE = 100;
-const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0, ratedUp: 0, ratedDown: 0, localBlocked: 0 };
+const stats = { posts: 0, dropped: 0, matched: 0, gated: 0, filtered: 0, judged: 0, decided: 0, correct: 0, pnl: 0, ratedUp: 0, ratedDown: 0, localBlocked: 0, trades: 0, tradesWon: 0 };
 
 // Free first pass: skip short posts, posts that are mostly hashtags/links, and repeats seen in the last 30 minutes.
 const seen = new Map();
@@ -37,11 +37,16 @@ setInterval(() => refreshMarkets().catch(() => {}), 5 * 60_000);
 const brief = (m) => ({ id: m.id, question: m.question, outcomes: m.outcomes, yesToken: m.yesToken });
 
 // Paper trade: $100 on the side the analyst called, for calls of strength 2+. Before fees and spread.
+// Risk rule: no long shots under 15¢ (a few points' wobble halves the stake) and no near-certainties over 85¢
+// (almost nothing to win). Learned from a 12¢ trade that lost $46.61 on a 5.5-point move.
+const MIN_ENTRY = 0.15;
+const MAX_ENTRY = 0.85;
 function paperPnl(g) {
   if (g.effect === "none" || g.strength < 2 || g.priceAtCall == null) return 0;
   const entry = g.effect === "up" ? g.priceAtCall : 1 - g.priceAtCall;
+  if (entry < MIN_ENTRY || entry > MAX_ENTRY) return 0;
   const exit = g.effect === "up" ? g.priceAfter : 1 - g.priceAfter;
-  return entry > 0 ? STAKE * (exit / entry - 1) : 0;
+  return STAKE * (exit / entry - 1);
 }
 
 function count(g) {
@@ -49,11 +54,15 @@ function count(g) {
     stats.decided++;
     if (g.correct) stats.correct++;
   }
+  if (g.pnl) {
+    stats.trades++;
+    if (g.pnl > 0) stats.tradesWon++;
+  }
   stats.pnl += g.pnl ?? 0;
 }
 
-// Restart-safe: rebuild the scoreboard from what is already on disk.
-for (const g of await readJsonl("grades.jsonl")) count(g);
+// Restart-safe: rebuild the scoreboard from what is already on disk, under the current trading rules.
+for (const g of await readJsonl("grades.jsonl")) count({ ...g, pnl: Number(paperPnl(g).toFixed(2)) });
 stats.judged = (await readJsonl("calls.jsonl")).length;
 
 function onGraded(g) {

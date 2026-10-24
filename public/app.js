@@ -39,7 +39,7 @@ function renderStats(s) {
     ["Analyst calls", s.judged],
     ["Graded by the market", s.decided],
     ["Accuracy", s.decided ? `${Math.round((100 * s.correct) / s.decided)}%` : "–"],
-    ["Paper P&L", `${s.pnl >= 0 ? "+" : "−"}$${Math.abs(s.pnl).toFixed(2)}`],
+    ["Paper P&L ($100 a trade)", `${s.pnl >= 0 ? "+" : "−"}$${Math.abs(s.pnl).toFixed(2)} · ${s.tradesWon ?? 0} of ${s.trades ?? 0} trades won`],
     ["Corrections sent to Mubit", `${s.ratedUp} Good · ${s.ratedDown} Bad`],
     ["Mubit balance", s.mubitBalance == null ? "–" : `$${s.mubitBalance.toFixed(2)} · ${s.mubitRunsLeft.toLocaleString()} runs left`],
     ["Spent from balance today", s.mubitSpentToday == null ? "–" : `$${s.mubitSpentToday.toFixed(3)}`],
